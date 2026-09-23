@@ -176,7 +176,7 @@ export class AirDirector {
   plates(): { x: number; y: number; z: number; name: string; hp: number }[] {
     return this.aliens
       .filter((a) => a.alive)
-      .map((a) => ({ x: a.x, y: a.y + 2.15, z: a.z, name: a.name, hp: Math.max(0, Math.round(a.hp)) }));
+      .map((a) => ({ x: a.x, y: a.y + 1.85, z: a.z, name: a.name, hp: Math.max(0, Math.round(a.hp)) }));
   }
 
   ray(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxT: number) {
@@ -185,10 +185,11 @@ export class AirDirector {
     for (let index = 0; index < this.aliens.length; index++) {
       const a = this.aliens[index];
       if (!a.alive) continue;
+      // 小灰人 ~1.65m：大头盒 / 细躯干盒 / 细腿盒
       const parts: [number, number, number, number, number, number, boolean][] = [
-        [a.x - 0.22, a.y + 1.45, a.z - 0.22, a.x + 0.22, a.y + 1.95, a.z + 0.22, true],
-        [a.x - 0.24, a.y + 0.55, a.z - 0.16, a.x + 0.24, a.y + 1.45, a.z + 0.16, false],
-        [a.x - 0.16, a.y, a.z - 0.14, a.x + 0.16, a.y + 0.55, a.z + 0.14, false],
+        [a.x - 0.2, a.y + 1.15, a.z - 0.22, a.x + 0.2, a.y + 1.68, a.z + 0.24, true],
+        [a.x - 0.19, a.y + 0.55, a.z - 0.14, a.x + 0.19, a.y + 1.15, a.z + 0.14, false],
+        [a.x - 0.13, a.y, a.z - 0.13, a.x + 0.13, a.y + 0.55, a.z + 0.13, false],
       ];
       for (const [x0, y0, z0, x1, y1, z1, head] of parts) {
         const t = slab(ox, oy, oz, dx, dy, dz, [x0, y0, z0, x1, y1, z1], bestT);
@@ -454,7 +455,7 @@ export class AirDirector {
       if (a.fire <= 0 && dist < 42) {
         a.fire = 0.85 + Math.random() * 0.45;
         const ox = a.x;
-        const oy = a.y + 1.35;
+        const oy = a.y + 1.05;
         const oz = a.z;
         const len = Math.hypot(tx - ox, ty - oy, tz - oz) || 1;
         const dx2 = (tx - ox) / len;
@@ -699,57 +700,104 @@ function buildPod() {
 
 function buildAlien() {
   const g = new THREE.Group();
+  // 小灰人：灰绿哑光肤质 + 近黑反光杏仁眼（《第三类接触》式宇航员外星人）
   const skin = new THREE.MeshStandardMaterial({
-    color: 0x8fbfb4,
-    roughness: 0.45,
-    metalness: 0.08,
-    emissive: 0x123832,
-    emissiveIntensity: 0.25,
+    color: 0x9aa79e,
+    roughness: 0.62,
+    metalness: 0.06,
+    emissive: 0x0e1412,
+    emissiveIntensity: 0.12,
   });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x14221f, roughness: 0.4, metalness: 0.3 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x12181a, roughness: 0.3, metalness: 0.5 });
   const eye = new THREE.MeshStandardMaterial({
-    color: 0xb8fff6,
-    emissive: 0x39ffe8,
-    emissiveIntensity: 1.8,
-    roughness: 0.15,
+    color: 0x05070a,
+    roughness: 0.1,
+    metalness: 0.7,
+    emissive: 0x02060a,
+    emissiveIntensity: 0.4,
   });
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 12), skin);
-  head.scale.set(0.85, 1.15, 0.95);
-  head.position.y = 1.72;
+  const glint = new THREE.MeshBasicMaterial({ color: 0xcfeee8 });
+
+  // 超大光滑颅顶：前额高耸、后脑拉长的椭球（身高约 1.65m）
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.29, 20, 16), skin);
+  head.scale.set(0.78, 1.02, 1.22);
+  head.position.set(0, 1.38, -0.03);
+  head.castShadow = true;
   g.add(head);
+  // 小下颌：无鼻，仅一道嘴缝
+  const jaw = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 10), skin);
+  jaw.scale.set(0.8, 0.9, 1.1);
+  jaw.position.set(0, 1.2, 0.13);
+  g.add(jaw);
+  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.012, 0.02), dark);
+  mouth.position.set(0, 1.19, 0.22);
+  g.add(mouth);
+  // 巨大黑色杏仁眼：占脸约一半，外角上挑、湿润反光
   for (const s of [-1, 1]) {
-    const e = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), eye);
-    e.scale.set(0.7, 1.35, 0.5);
-    e.position.set(s * 0.09, 1.74, 0.2);
+    const e = new THREE.Mesh(new THREE.SphereGeometry(0.085, 14, 12), eye);
+    e.scale.set(0.85, 1.35, 0.55);
+    e.position.set(s * 0.1, 1.4, 0.17);
+    e.rotation.z = -s * 0.5;
+    e.rotation.y = s * 0.25;
     g.add(e);
+    const gl = new THREE.Mesh(new THREE.SphereGeometry(0.014, 6, 5), glint);
+    gl.position.set(s * 0.12, 1.45, 0.215);
+    g.add(gl);
   }
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.16, 8), skin);
-  neck.position.y = 1.48;
+  // 细长颈
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.055, 0.16, 10), skin);
+  neck.position.y = 1.14;
   g.add(neck);
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.16, 0.55, 4, 8), skin);
-  torso.position.y = 1.1;
+  // 窄肩细腰躯干（去掉战术背心）
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.34, 4, 10), skin);
+  torso.position.y = 0.9;
+  torso.scale.set(1, 1, 0.75);
   g.add(torso);
-  const vest = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.32, 0.16), dark);
-  vest.position.set(0, 1.12, 0.04);
-  g.add(vest);
+  const chest = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), skin);
+  chest.scale.set(1.15, 0.7, 0.75);
+  chest.position.y = 1.06;
+  g.add(chest);
+  const pelvis = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8), skin);
+  pelvis.scale.set(1.1, 0.8, 0.8);
+  pelvis.position.y = 0.58;
+  g.add(pelvis);
+  // 纤细四肢
   for (const s of [-1, 1]) {
-    const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.55, 3, 6), skin);
-    arm.position.set(s * 0.2, 1.05, 0.05);
-    arm.rotation.z = s * 0.35;
-    arm.rotation.x = 0.5;
-    g.add(arm);
-    const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.5, 3, 6), skin);
-    leg.position.set(s * 0.08, 0.38, 0);
-    g.add(leg);
+    const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), skin);
+    shoulder.position.set(s * 0.17, 1.08, 0);
+    g.add(shoulder);
+    const upper = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.26, 3, 6), skin);
+    upper.position.set(s * 0.19, 0.9, 0.02);
+    upper.rotation.z = s * 0.12;
+    g.add(upper);
+    const fore = new THREE.Mesh(new THREE.CapsuleGeometry(0.032, 0.24, 3, 6), skin);
+    fore.position.set(s * 0.21, 0.65, 0.06);
+    fore.rotation.x = -0.25;
+    g.add(fore);
+    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), skin);
+    hand.scale.set(1, 1.3, 0.7);
+    hand.position.set(s * 0.21, 0.5, 0.1);
+    g.add(hand);
+    const thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.05, 0.24, 3, 6), skin);
+    thigh.position.set(s * 0.07, 0.42, 0);
+    g.add(thigh);
+    const shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.04, 0.22, 3, 6), skin);
+    shin.position.set(s * 0.07, 0.16, 0.01);
+    g.add(shin);
+    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, 0.14), skin);
+    foot.position.set(s * 0.07, 0.02, 0.04);
+    g.add(foot);
   }
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.42), dark);
-  gun.position.set(0.12, 1.05, 0.28);
-  g.add(gun);
+  // 前臂式能量发射器（细管，替代原人形步枪），出膛高度与 fireBolt y+1.05 对齐
+  const emitter = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.024, 0.18, 8), dark);
+  emitter.rotation.x = Math.PI / 2;
+  emitter.position.set(0.17, 1.02, 0.2);
+  g.add(emitter);
   const tip = new THREE.Mesh(
-    new THREE.SphereGeometry(0.05, 8, 6),
+    new THREE.SphereGeometry(0.028, 8, 6),
     new THREE.MeshStandardMaterial({ color: 0x7dfff0, emissive: 0x39ffe8, emissiveIntensity: 2 }),
   );
-  tip.position.set(0.12, 1.05, 0.5);
+  tip.position.set(0.17, 1.02, 0.3);
   g.add(tip);
   return g;
 }

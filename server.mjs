@@ -69,7 +69,7 @@ server.listen(PORT, "0.0.0.0", () => {
     for (const ni of list || []) if (ni.family === "IPv4" && !ni.internal) addrs.push(ni.address);
   }
   console.log("");
-  console.log("  ▸ 穿越火线 · 沙漠-1  局域网联机已就绪");
+  console.log("  ▸ 沙漠之鹰  局域网联机已就绪");
   console.log("  本机地址 : http://localhost:" + PORT);
   for (const a of addrs) console.log("  局域网地址: http://" + a + ":" + PORT);
   console.log("");

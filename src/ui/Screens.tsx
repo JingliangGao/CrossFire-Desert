@@ -1,5 +1,4 @@
 import type { HudState } from "../game/fps";
-import { WEAPON_NAMES } from "../game/fps";
 import type { ScoreRow } from "../game/scores";
 import { PLAYER_NAME } from "./Hud";
 
@@ -54,13 +53,13 @@ export function Menu({ scores, onStart, onToggleMute, muted }: Props) {
       <div className="mx-auto flex min-h-full max-w-[1180px] flex-col gap-5 px-4 py-6 lg:flex-row lg:items-center lg:gap-8">
         {/* left: title + briefing */}
         <div className="rise flex-1">
-          <div className="text-[10px] tracking-[0.5em] text-white/45">CROSSFIRE · 浏览器作战</div>
+          <div className="text-[10px] tracking-[0.5em] text-white/45">DESERT EAGLE · 浏览器作战</div>
           <h1 className="mt-1 flex items-baseline gap-3">
             <span
               className="text-[46px] leading-none font-black tracking-[0.06em] text-[#F0E6D2] sm:text-[64px]"
               style={{ textShadow: "0 3px 0 rgba(120,20,10,0.65), 0 10px 30px rgba(0,0,0,0.7)" }}
             >
-              穿越火线
+              沙漠之鹰
             </span>
             <span className="num text-[22px] tracking-[0.22em] text-[#FFB020] sm:text-[28px]">沙漠-1</span>
           </h1>
@@ -82,7 +81,7 @@ export function Menu({ scores, onStart, onToggleMute, muted }: Props) {
             </span>
             <span>
               <KeyCap k="左键" />
-              开火
+              开火（枪 / 匕首 / 投雷）
             </span>
             <span>
               <KeyCap k="右键" />
@@ -93,8 +92,20 @@ export function Menu({ scores, onStart, onToggleMute, muted }: Props) {
               装弹
             </span>
             <span>
-              <KeyCap k="1-8" />
-              {WEAPON_NAMES.join(" / ")}
+              <KeyCap k="1-7" />
+              切换背包槽位
+            </span>
+            <span>
+              <KeyCap k="Q / E / 滚轮" />
+              上一 / 下一武器
+            </span>
+            <span>
+              <KeyCap k="F" />
+              拾取地面武器
+            </span>
+            <span>
+              <KeyCap k="G" />
+              丢弃当前武器
             </span>
             <span>
               <KeyCap k="空格" />
@@ -112,6 +123,9 @@ export function Menu({ scores, onStart, onToggleMute, muted }: Props) {
               <KeyCap k="M" />
               静音
             </span>
+            <span className="col-span-2 text-[10px] text-white/50">
+              开局：MP5 · AWM · 匕首 · 手雷×2 —— 匕首近战、手雷抛物线，满 7 格需按 G 丢弃才可再捡
+            </span>
             <span className="col-span-2 border-t border-white/10 pt-1.5 text-[10px] leading-relaxed text-white/45">
               局域网联机：先 <b className="text-[#39FFE0]">npm run build</b>，再 <b className="text-[#39FFE0]">node server.mjs</b>，
               同一 Wi-Fi 下的手机/电脑打开本机 IP:8787 即可并肩作战；没开服务器时同浏览器多标签也能联机。
@@ -127,7 +141,7 @@ export function Menu({ scores, onStart, onToggleMute, muted }: Props) {
             </button>
           </div>
           <p className="mt-2 text-[10px] tracking-[0.2em] text-white/35">
-            触屏：左半屏拖动移动 · 右半屏拖动转身 · 右下角开火/装弹/跳
+            触屏：左半屏拖动移动 · 右半屏拖动转身 · 右下角开火 / 装弹 / 跳 / 换枪 / 拾 / 丢
           </p>
         </div>
 
@@ -137,7 +151,7 @@ export function Menu({ scores, onStart, onToggleMute, muted }: Props) {
             <div className="relative overflow-hidden">
               <img
                 src="images/menu_bg.jpg"
-                alt="沙漠-1 地图实景"
+                alt="沙漠之鹰 · 沙漠-1 地图实景"
                 className="h-[190px] w-full object-cover sm:h-[240px]"
                 style={{ filter: "saturate(0.9) contrast(1.05)" }}
                 onError={(e) => {

@@ -1,5 +1,4 @@
 import type { HudState } from "../game/fps";
-import { WEAPON_NAMES } from "../game/fps";
 
 export const PLAYER_NAME = "丶火线新兵";
 
@@ -116,7 +115,9 @@ function Markers({ hud }: { hud: HudState }) {
 export function Hud({ hud, shapes }: { hud: HudState; shapes: { x: number; z: number; w: number; d: number }[] }) {
   const hpPct = Math.max(0, Math.min(1, hud.hp / 100));
   const arPct = Math.max(0, Math.min(1, hud.armor / 100));
-  const low = hud.ammo <= Math.max(2, 0.25 * 30);
+  const isKnife = hud.weaponType === "knife";
+  const isGrenade = hud.weaponType === "grenade";
+  const low = hud.weaponType === "gun" && hud.ammo <= Math.max(2, 0.25 * 30);
 
   return (
     <div className="pointer-events-none absolute inset-0 z-10 select-none">
@@ -229,31 +230,43 @@ export function Hud({ hud, shapes }: { hud: HudState; shapes: { x: number; z: nu
             <span
               className={`num hud-glow text-[38px] leading-none sm:text-[48px] ${low ? "text-[#E23A2E]" : "text-white"}`}
             >
-              {String(hud.ammo).padStart(2, "0")}
+              {isKnife ? "∞" : String(hud.ammo).padStart(2, "0")}
             </span>
-            <span className="num mb-1 text-[18px] leading-none text-white/45 sm:text-[22px]">
-              /{String(hud.reserve).padStart(2, "0")}
-            </span>
+            {!isKnife && hud.weaponType === "gun" && (
+              <span className="num mb-1 text-[18px] leading-none text-white/45 sm:text-[22px]">
+                /{String(hud.reserve).padStart(2, "0")}
+              </span>
+            )}
           </div>
           {hud.reloading > 0 ? (
             <div className="mt-1 h-[4px] w-[150px] bg-white/12 sm:w-[180px]">
               <div className="h-full bg-[#FFB020]" style={{ width: `${hud.reloading * 100}%` }} />
             </div>
           ) : (
-            <div className="mt-1 flex max-w-[210px] flex-wrap justify-end gap-1">
-              {WEAPON_NAMES.map((n, i) => (
+            <div className="mt-1 flex max-w-[230px] flex-wrap justify-end gap-1">
+              <span
+                className={`num border px-1 text-[10px] leading-[15px] ${
+                  hud.slots.length >= 7 ? "border-[#FFB020] text-[#FFB020]" : "border-white/15 text-white/35"
+                }`}
+              >
+                {hud.slots.length}/7
+              </span>
+              {hud.slots.map((s, i) => (
                 <span
-                  key={n}
+                  key={`${i}-${s.name}`}
                   className={`num border px-1 text-[10px] leading-[15px] ${
                     i === hud.weaponIdx
                       ? "border-[#FFB020] bg-[#FFB020]/20 text-[#FFB020]"
                       : "border-white/15 text-white/35"
                   }`}
                 >
-                  {i + 1}
+                  {i + 1} {s.type === "knife" ? "匕首" : s.name}
                 </span>
               ))}
             </div>
+          )}
+          {!isGrenade && !isKnife && hud.prompt === "" && hud.reloading === 0 && (
+            <div className="mt-1 text-[9px] tracking-[0.18em] text-white/30">1-7 槽位 · Q/E 换枪 · G 丢弃</div>
           )}
           {hud.prompt && (
             <div className="mt-1 text-[10px] tracking-[0.24em] text-[#FFB020]">{hud.prompt}</div>

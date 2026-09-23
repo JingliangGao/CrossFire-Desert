@@ -6,11 +6,30 @@ import { SMAAPass } from "three/addons/postprocessing/SMAAPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { buildMap, type Box, type MapData } from "./map";
 import { AirDirector, type AirTarget } from "./air";
-import { buildExtraGun } from "./guns";
+import { buildGunModel, goldify } from "./guns";
 import { animateBeast, buildBeast } from "./beast";
 import { animateNpc, buildNpc, muzzleWorld, type NpcModel } from "./npc";
+import { buildSpawnPickups, dropPickup, removePickup, updatePickups, type Pickup } from "./pickups";
+import {
+  GRENADE_ID,
+  GRENADE_STACK,
+  KNIFE_ID,
+  KNIFE_RANGE,
+  MAX_SLOTS,
+  WEAPON_NAMES,
+  defOf,
+  makeStartLoadout,
+  slotAmmo,
+  slotLabel,
+  slotReserve,
+  type InventorySlot,
+  type WeaponDef,
+} from "./weapons";
 import { Net, type InMsg } from "./net";
 import { snd } from "./sound";
+
+export { GRENADE_STACK, KNIFE_ID, MAX_SLOTS, WEAPON_NAMES };
+export type { InventorySlot, WeaponDef };
 
 export type Status = "menu" | "playing" | "paused" | "over";
 export { PLAYER_NAME } from "./names";
@@ -38,6 +57,8 @@ export interface HudState {
   reserve: number;
   weapon: string;
   weaponIdx: number;
+  weaponType: "gun" | "knife" | "grenade";
+  slots: { name: string; type: "gun" | "knife" | "grenade" }[];
   reloading: number;
   kills: number;
   headshots: number;
@@ -55,39 +76,6 @@ export interface HudState {
   peers: number;
   net: "off" | "ws" | "local";
 }
-
-interface WeaponDef {
-  name: string;
-  kind: "rifle" | "sniper" | "pistol" | "smg" | "shotgun" | "rocket" | "lmg";
-  dmg: number;
-  headMul: number;
-  rpm: number;
-  mag: number;
-  reserve: number;
-  auto: boolean;
-  spread: number;
-  recoil: number;
-  reload: number;
-  fov: number;
-  scope: boolean;
-  opticY: number;
-  reticle: "mil" | "dot";
-  pellets?: number;
-  splash?: number;
-  splashR?: number;
-}
-
-const WEAPONS: WeaponDef[] = [
-  { name: "M4A1", kind: "rifle", dmg: 28, headMul: 4, rpm: 680, mag: 30, reserve: 90, auto: true, spread: 0.012, recoil: 0.9, reload: 2.1, fov: 32, scope: true, opticY: 0.082, reticle: "dot" },
-  { name: "AK-47", kind: "rifle", dmg: 35, headMul: 4, rpm: 600, mag: 30, reserve: 90, auto: true, spread: 0.018, recoil: 1.5, reload: 2.3, fov: 34, scope: true, opticY: 0.079, reticle: "dot" },
-  { name: "AWM", kind: "sniper", dmg: 135, headMul: 2.4, rpm: 44, mag: 5, reserve: 25, auto: false, spread: 0.002, recoil: 4.2, reload: 3.2, fov: 14, scope: true, opticY: 0.108, reticle: "mil" },
-  { name: "沙漠之鹰", kind: "pistol", dmg: 58, headMul: 4, rpm: 270, mag: 7, reserve: 35, auto: false, spread: 0.018, recoil: 2.2, reload: 1.7, fov: 46, scope: true, opticY: 0.05, reticle: "dot" },
-  { name: "MP5", kind: "smg", dmg: 18, headMul: 3.2, rpm: 900, mag: 30, reserve: 120, auto: true, spread: 0.02, recoil: 0.55, reload: 1.9, fov: 40, scope: true, opticY: 0.072, reticle: "dot" },
-  { name: "XM1014", kind: "shotgun", dmg: 16, headMul: 1.5, rpm: 75, mag: 7, reserve: 28, auto: false, spread: 0.07, recoil: 2.8, reload: 2.6, fov: 48, scope: true, opticY: 0.078, reticle: "dot", pellets: 8 },
-  { name: "RPG-7", kind: "rocket", dmg: 160, headMul: 1, rpm: 30, mag: 1, reserve: 5, auto: false, spread: 0.004, recoil: 4.5, reload: 2.8, fov: 50, scope: true, opticY: 0.09, reticle: "dot", splash: 140, splashR: 6.5 },
-  { name: "M249", kind: "lmg", dmg: 24, headMul: 2.6, rpm: 780, mag: 100, reserve: 200, auto: true, spread: 0.026, recoil: 1.15, reload: 4.2, fov: 38, scope: true, opticY: 0.086, reticle: "dot" },
-];
-export const WEAPON_NAMES = WEAPONS.map((w) => w.name);
 
 const GRAV = 26;
 const JUMP_V = 9.15;
@@ -174,8 +162,14 @@ export class Fps {
   private menuCam = 0;
 
   private wIdx = 0;
-  private ammo = WEAPONS.map((w) => w.mag);
-  private reserve = WEAPONS.map((w) => w.reserve);
+  /** 槽位化背包：最多 7 格，取代「8 把枪永远全有」 */
+  private slots: InventorySlot[] = makeStartLoadout();
+  private pickups: Pickup[] = [];
+  private nearPickup: Pickup | null = null;
+  private nearPrompt = "";
+  private msg = "";
+  private msgT = 0;
+  private nades: { mesh: THREE.Group; x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number }[] = [];
   private air!: AirDirector;
   private rockets: { mesh: THREE.Group; x: number; y: number; z: number; vx: number; vy: number; vz: number; life: number }[] = [];
   private net: Net | null = null;
@@ -185,7 +179,6 @@ export class Fps {
   >();
   private netT = 0;
   private netMode: "off" | "ws" | "local" = "off";
-  private peerCount = 0;
   private fireCd = 0;
   private reloadT = 0;
   private firing = false;
@@ -283,7 +276,7 @@ export class Fps {
       pmrem.dispose();
     }
 
-    this.buildGun(0);
+    this.buildGun(this.slots[0].defId);
     this.buildFx();
     this.dust = this.scene.children.find((o) => o instanceof THREE.Points) as THREE.Points;
 
@@ -302,12 +295,12 @@ export class Fps {
 
     this.px = this.map.playerSpawn.x;
     this.pz = this.map.playerSpawn.z;
+    this.pickups = buildSpawnPickups(this.scene, this.map.playerSpawn);
     this.air = new AirDirector(this.scene);
     this.net = new Net({
       onPeer: (m) => this.onPeer(m),
-      onStatus: (s, n) => {
+      onStatus: (s, _n) => {
         this.netMode = s;
-        this.peerCount = n;
         this.emit(true);
       },
     });
@@ -364,15 +357,16 @@ export class Fps {
     snd.unlock();
     if (this.status !== "playing") return;
     if (k === "r") this.startReload();
-    if (k >= "1" && k <= "8") this.switchWeapon(parseInt(k, 10) - 1);
-    if (k === "q") this.switchWeapon((this.wIdx + 1) % WEAPONS.length);
-    if (k === "e") this.switchWeapon((this.wIdx + WEAPONS.length - 1) % WEAPONS.length);
+    if (k >= "1" && k <= "7") this.switchWeapon(parseInt(k, 10) - 1);
+    if (k === "q") this.cycleWeapon(1);
+    if (k === "e") this.cycleWeapon(-1);
+    if (k === "f") this.pickupAction();
+    if (k === "g") this.dropCurrent();
     if (k === " ") this.jump();
   };
   private onWheel = (e: WheelEvent) => {
     if (this.status !== "playing" || e.deltaY === 0) return;
-    const dir = e.deltaY > 0 ? 1 : -1;
-    this.switchWeapon((this.wIdx + dir + WEAPONS.length) % WEAPONS.length);
+    this.cycleWeapon(e.deltaY > 0 ? 1 : -1);
   };
   private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.key.toLowerCase());
 
@@ -422,9 +416,28 @@ export class Fps {
   weaponNow(i: number) {
     this.switchWeapon(i);
   }
+  /** 触屏「枪」按钮：在当前 slots 内循环 */
+  cycleWeapon(dir: number) {
+    const n = this.slots.length;
+    if (n <= 1) return;
+    this.switchWeapon((this.wIdx + dir + n) % n);
+  }
+  /** 触屏「拾」按钮 */
+  pickupNow() {
+    this.pickupAction();
+  }
+  /** 触屏「丢」按钮 */
+  dropNow() {
+    this.dropCurrent();
+  }
   toggleScope() {
+    if (!this.w.scope) return; // 匕首/手雷没有镜子
     this.scoped = !this.scoped;
     snd.click();
+  }
+  /** 只读背包状态，供触屏按钮判断 */
+  get inventory() {
+    return { count: this.slots.length, max: MAX_SLOTS };
   }
 
   // ------------------------------------------------------------------ state
@@ -441,11 +454,20 @@ export class Fps {
     this.deathT = 0;
     this.t = 0;
     this.feed = [];
-    this.ammo = [30, 30, 5, 7];
-    this.reserve = [90, 90, 25, 35];
+    // 开局 loadout：MP5 + AWM + 匕首 + 手雷×2（顺带修掉 ammo/reserve 只写 4 个的历史 bug）
+    this.slots = makeStartLoadout();
     this.wIdx = 0;
     this.reloadT = 0;
     this.scoped = false;
+    this.msg = "";
+    this.msgT = 0;
+    this.nearPickup = null;
+    this.nearPrompt = "";
+    this.nades.forEach((n) => this.scene.remove(n.mesh));
+    this.nades = [];
+    this.pickups.forEach((p) => removePickup(this.scene, p));
+    this.pickups = buildSpawnPickups(this.scene, this.map.playerSpawn);
+    this.buildGun(this.slots[0].defId);
     this.px = this.map.playerSpawn.x;
     this.py = 0;
     this.pz = this.map.playerSpawn.z;
@@ -480,24 +502,34 @@ export class Fps {
   }
 
   // ---------------------------------------------------------------- weapons
-  private get w() {
-    return WEAPONS[this.wIdx];
+  private get slot(): InventorySlot {
+    return this.slots[this.wIdx] ?? this.slots[0];
+  }
+  private get w(): WeaponDef {
+    return defOf(this.slot.defId);
   }
 
   private switchWeapon(i: number) {
-    if (i === this.wIdx || i < 0 || i >= WEAPONS.length || this.swapT > 0) return;
+    if (i === this.wIdx || i < 0 || i >= this.slots.length || this.swapT > 0) return;
+    this.selectSlot(i, 0.45);
+  }
+
+  /** 直接切到槽位 i（拾取入包时也走这里） */
+  private selectSlot(i: number, swap: number) {
     this.wIdx = i;
     this.reloadT = 0;
     this.scoped = false;
-    this.swapT = 0.45;
-    this.buildGun(i);
+    this.swapT = swap;
+    this.buildGun(this.slot.defId);
     snd.swap();
     this.emit(true);
   }
 
   private startReload() {
+    const s = this.slot;
+    if (s.type !== "gun") return;
     const w = this.w;
-    if (this.reloadT > 0 || this.ammo[this.wIdx] >= w.mag || this.reserve[this.wIdx] <= 0) return;
+    if (this.reloadT > 0 || s.ammo >= w.mag || s.reserve <= 0) return;
     this.reloadT = w.reload;
     this.scoped = false;
     snd.reload();
@@ -505,199 +537,118 @@ export class Fps {
   }
 
   private finishReload() {
+    const s = this.slot;
+    if (s.type !== "gun") return;
     const w = this.w;
-    const take = Math.min(w.mag - this.ammo[this.wIdx], this.reserve[this.wIdx]);
-    this.ammo[this.wIdx] += take;
-    this.reserve[this.wIdx] -= take;
+    const take = Math.min(w.mag - s.ammo, s.reserve);
+    s.ammo += take;
+    s.reserve -= take;
     this.emit(true);
   }
 
-  /** first-person weapon: full part breakdown — rails, bipods, bolts, optics */
-  private buildGun(idx: number) {
-    this.camera.remove(this.gun);
-    const g = new THREE.Group();
-    const steel = new THREE.MeshStandardMaterial({ color: 0x2e3336, metalness: 0.9, roughness: 0.3 });
-    const blued = new THREE.MeshStandardMaterial({ color: 0x17191b, metalness: 0.85, roughness: 0.42 });
-    const parker = new THREE.MeshStandardMaterial({ color: 0x3d4245, metalness: 0.5, roughness: 0.66 });
-    const poly = new THREE.MeshStandardMaterial({ color: 0x1e2022, metalness: 0.08, roughness: 0.76 });
-    const wood = new THREE.MeshStandardMaterial({ color: 0x7a4a24, metalness: 0.04, roughness: 0.48 });
-    const gold = new THREE.MeshStandardMaterial({ color: 0xc9a227, metalness: 0.95, roughness: 0.26 });
-    const rubber = new THREE.MeshStandardMaterial({ color: 0x141414, metalness: 0.0, roughness: 0.95 });
-    const glass = new THREE.MeshStandardMaterial({
-      color: 0x123c3a,
-      metalness: 0.9,
-      roughness: 0.04,
-      emissive: 0x0d4a44,
-      emissiveIntensity: 0.5,
-    });
-    const glove = new THREE.MeshStandardMaterial({ color: 0x2b2721, roughness: 0.92 });
+  private say(text: string) {
+    this.msg = text;
+    this.msgT = 2.2;
+  }
 
-    const add = (geo: THREE.BufferGeometry, m: THREE.Material, x: number, y: number, z: number, rx = 0) => {
-      const b = new THREE.Mesh(geo, m);
-      b.position.set(x, y, z);
-      b.rotation.x = rx;
-      g.add(b);
-      return b;
-    };
-    const box = (w: number, h: number, d: number, x: number, y: number, z: number, m: THREE.Material, rx = 0) =>
-      add(new THREE.BoxGeometry(w, h, d), m, x, y, z, rx);
-    /** cylinder laid along the barrel axis (-Z) */
-    const tube = (r: number, l: number, x: number, y: number, z: number, m: THREE.Material, seg = 16) =>
-      add(new THREE.CylinderGeometry(r, r, l, seg), m, x, y, z, Math.PI / 2);
-    const cone = (r1: number, r2: number, l: number, x: number, y: number, z: number, m: THREE.Material) =>
-      add(new THREE.CylinderGeometry(r1, r2, l, 16), m, x, y, z, Math.PI / 2);
-    const ball = (r: number, x: number, y: number, z: number, m: THREE.Material) =>
-      add(new THREE.SphereGeometry(r, 12, 10), m, x, y, z);
-    /** picatinny teeth along Z */
-    const rail = (y: number, z0: number, len: number, n: number, m: THREE.Material) => {
-      box(0.034, 0.01, len, 0, y, z0, m);
-      for (let i = 0; i < n; i++) {
-        const z = z0 - len / 2 + ((i + 0.5) * len) / n;
-        box(0.036, 0.012, (len / n) * 0.55, 0, y + 0.008, z, m);
+  /** F / 触屏「拾」：靠近 ≤2.5m 的地面武器入包；满 7 格拒绝 */
+  private pickupAction() {
+    const p = this.nearPickup;
+    if (!p || p.taken) return;
+    const def = defOf(p.defId);
+    if (def.type === "grenade") {
+      const take = p.count ?? 1;
+      const ex = this.slots.find((s): s is Extract<InventorySlot, { type: "grenade" }> => s.type === "grenade");
+      if (ex && ex.count + take <= GRENADE_STACK) {
+        ex.count += take;
+        this.nearPickup = null;
+        removePickup(this.scene, p);
+        this.pickups = this.pickups.filter((q) => q !== p);
+        this.selectSlot(this.slots.indexOf(ex), 0.35);
+        return;
       }
-    };
-    /** a complete optic: body, bells, turrets, mount, eyepiece glass */
-    const optic = (y: number, z0: number, len: number, r: number, bellR: number) => {
-      tube(r, len, 0, y, z0, blued, 20);
-      tube(bellR, 0.07, 0, y, z0 - len / 2 + 0.02, blued, 20); // objective bell
-      tube(r * 1.16, 0.05, 0, y, z0 + len / 2 - 0.02, rubber, 20); // eyepiece cup
-      tube(r * 1.1, 0.022, 0, y, z0 + len / 2 - 0.06, parker, 18); // magnification ring
-      // lens seen from the shooter's eye
-      const eye = new THREE.Mesh(new THREE.CircleGeometry(r * 0.92, 22), glass);
-      eye.position.set(0, y, z0 + len / 2 + 0.005);
-      g.add(eye);
-      // top elevation turret + side windage turret
-      tube(0.014, 0.022, 0, y + r + 0.012, z0, parker, 12);
-      add(new THREE.CylinderGeometry(0.016, 0.016, 0.016, 12), blued, 0, y + r + 0.03, z0).rotation.x = 0;
-      box(0.012, 0.014, 0.008, 0, y + r + 0.04, z0, steel);
-      const side = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.013, 0.024, 12), parker);
-      side.rotation.z = Math.PI / 2;
-      side.position.set(r + 0.014, y, z0);
-      g.add(side);
-      // mount ring + clamp reaching down to the rail
-      tube(r * 1.22, 0.02, 0, y, z0 - len * 0.3, parker, 18);
-      tube(r * 1.22, 0.02, 0, y, z0 + len * 0.28, parker, 18);
-      box(0.03, y - r - 0.02, 0.04, 0, (y - r) / 2, z0 - len * 0.3, parker);
-      box(0.03, y - r - 0.02, 0.04, 0, (y - r) / 2, z0 + len * 0.28, parker);
-      // turret caps
-      const sc = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.02, 12), parker);
-      sc.rotation.z = Math.PI / 2;
-      sc.position.set(r + 0.03, y, z0);
-      g.add(sc);
-    };
-
-    if (idx >= 4) {
-      buildExtraGun(g, idx);
-    } else if (idx === 0) {
-      /* ----------------------------------------------------------- M4A1 */
-      box(0.072, 0.055, 0.34, 0, 0, 0.02, steel); // upper
-      box(0.066, 0.05, 0.18, 0, -0.05, 0.06, steel); // lower
-      rail(0.033, 0.02, 0.3, 15, blued);
-      box(0.012, 0.03, 0.07, 0.038, 0.004, -0.06, blued); // ejection port
-      box(0.02, 0.02, 0.05, 0.036, -0.01, 0.1, parker); // forward assist
-      box(0.05, 0.014, 0.03, 0, 0.03, 0.16, blued); // charging handle
-      box(0.07, 0.055, 0.07, 0, -0.055, -0.06, steel); // magwell
-      box(0.056, 0.17, 0.072, 0, -0.16, -0.05, poly, 0.14); // magazine
-      box(0.06, 0.014, 0.076, 0, -0.245, -0.07, blued); // floorplate
-      box(0.05, 0.012, 0.06, 0, -0.08, 0.02, blued); // trigger guard
-      box(0.045, 0.09, 0.07, 0, -0.075, 0.13, poly, -0.3); // pistol grip
-      box(0.01, 0.03, 0.012, 0, -0.075, 0.07, blued); // trigger
-      tube(0.016, 0.16, 0, -0.005, 0.24, parker); // buffer tube
-      box(0.058, 0.07, 0.15, 0, -0.012, 0.3, poly); // collapsible stock
-      box(0.05, 0.03, 0.05, 0, 0.03, 0.26, poly); // cheek riser
-      box(0.05, 0.008, 0.03, 0, -0.05, 0.36, blued); // butt plate
-      box(0.012, 0.05, 0.02, 0, -0.06, 0.29, blued); // sling loop
-      tube(0.032, 0.26, 0, 0, -0.24, poly, 12); // handguard
-      for (let i = 0; i < 5; i++) box(0.066, 0.014, 0.02, 0, 0.03, -0.34 + i * 0.05, blued);
-      box(0.03, 0.03, 0.05, 0, 0.028, -0.36, steel); // gas block
-      box(0.04, 0.05, 0.03, 0, 0.05, -0.37, steel); // front sight wings
-      box(0.008, 0.04, 0.01, 0, 0.055, -0.37, steel);
-      tube(0.011, 0.2, 0, 0, -0.45, blued); // barrel
-      cone(0.017, 0.02, 0.05, 0, 0, -0.56, steel); // A2 birdcage
-      box(0.036, 0.008, 0.03, 0, 0.004, -0.57, blued);
-      optic(0.082, -0.02, 0.17, 0.024, 0.033); // ACOG
-    } else if (idx === 1) {
-      /* ----------------------------------------------------------- AK-47 */
-      box(0.07, 0.06, 0.3, 0, 0, 0.03, steel); // receiver
-      box(0.062, 0.03, 0.26, 0, 0.04, 0.03, parker); // dust cover
-      box(0.03, 0.02, 0.05, 0, 0.05, -0.06, blued); // rear sight block
-      rail(0.05, 0.1, 0.09, 5, blued);
-      box(0.072, 0.056, 0.16, 0, -0.004, -0.15, wood); // lower handguard
-      box(0.06, 0.03, 0.14, 0, 0.03, -0.15, wood); // upper handguard
-      tube(0.013, 0.15, 0, 0.045, -0.14, blued); // gas tube
-      box(0.036, 0.04, 0.04, 0, 0.03, -0.24, steel); // gas block
-      tube(0.01, 0.24, 0, 0, -0.34, blued); // barrel
-      box(0.036, 0.05, 0.024, 0, 0.035, -0.44, steel); // front sight base
-      box(0.01, 0.04, 0.012, 0, 0.05, -0.44, steel); // post
-      box(0.03, 0.03, 0.05, 0, 0.0, -0.5, steel, 0.3); // slant brake
-      // curved magazine — the AK silhouette
-      box(0.05, 0.1, 0.07, 0, -0.1, -0.03, poly, 0.16);
-      box(0.05, 0.1, 0.07, 0, -0.185, -0.06, poly, 0.5);
-      box(0.05, 0.08, 0.07, 0, -0.255, -0.11, poly, 0.78);
-      box(0.056, 0.012, 0.074, 0, -0.3, -0.14, blued, 0.78);
-      box(0.045, 0.085, 0.07, 0, -0.07, 0.14, wood, -0.34); // grip
-      box(0.05, 0.012, 0.055, 0, -0.07, 0.05, blued); // trigger guard
-      box(0.01, 0.028, 0.012, 0, -0.068, 0.08, blued); // trigger
-      box(0.016, 0.02, 0.06, 0.04, -0.02, 0.12, gold, 0.2); // selector lever
-      box(0.055, 0.07, 0.2, 0, -0.02, 0.27, wood, -0.06); // stock
-      box(0.05, 0.05, 0.05, 0, -0.03, 0.19, wood, -0.06);
-      box(0.056, 0.075, 0.014, 0, -0.03, 0.37, steel, -0.06); // butt plate
-      box(0.014, 0.04, 0.02, 0, -0.06, 0.3, blued); // sling swivel
-      optic(0.079, -0.03, 0.19, 0.023, 0.031); // PSO-style side scope
-    } else if (idx === 2) {
-      /* ------------------------------------------------------------ AWM */
-      box(0.07, 0.07, 0.44, 0, 0, 0.06, steel); // receiver
-      rail(0.04, 0.08, 0.34, 17, blued);
-      tube(0.017, 0.2, 0, 0.026, 0.06, parker); // bolt body
-      ball(0.019, 0.055, 0.0, 0.14, steel); // bolt knob
-      tube(0.011, 0.06, 0.04, 0.0, 0.14, steel);
-      box(0.03, 0.03, 0.04, 0, -0.045, 0.06, parker); // bottom metal
-      box(0.05, 0.012, 0.06, 0, -0.07, 0.05, blued); // trigger guard
-      box(0.01, 0.03, 0.012, 0, -0.066, 0.09, gold); // trigger
-      box(0.02, 0.02, 0.05, 0.042, -0.02, 0.0, parker, 0.2); // safety
-      tube(0.017, 0.5, 0, 0.005, -0.34, blued, 20); // fluted barrel
-      for (let i = 0; i < 5; i++) box(0.036, 0.006, 0.4, 0, 0.005, -0.34, parker);
-      cone(0.024, 0.028, 0.07, 0, 0.005, -0.63, steel); // muzzle brake
-      for (let i = 0; i < 3; i++) box(0.05, 0.04, 0.012, 0, 0.005, -0.61 + i * 0.02, blued);
-      box(0.06, 0.1, 0.26, 0, -0.04, 0.33, poly); // thumbhole stock
-      box(0.05, 0.06, 0.1, 0, -0.04, 0.24, poly);
-      box(0.045, 0.075, 0.11, 0, -0.05, 0.2, poly, -0.25); // pistol grip
-      box(0.045, 0.03, 0.16, 0, 0.02, 0.4, poly); // cheek riser
-      box(0.05, 0.1, 0.03, 0, -0.05, 0.46, blued); // butt plate
-      // bipod, folded back
-      box(0.012, 0.09, 0.012, -0.03, -0.07, -0.42, parker, 0.9);
-      box(0.012, 0.09, 0.012, 0.03, -0.07, -0.42, parker, 0.9);
-      box(0.06, 0.03, 0.05, 0, -0.03, -0.42, parker);
-      optic(0.108, 0.0, 0.34, 0.03, 0.046); // big glass
-    } else {
-      /* ------------------------------------------------- 沙漠之鹰 (gold) */
-      box(0.05, 0.05, 0.24, 0, 0, -0.03, gold); // slide
-      box(0.044, 0.04, 0.16, 0, -0.045, 0.02, gold); // frame
-      for (let i = 0; i < 7; i++) box(0.052, 0.05, 0.006, 0, 0, 0.06 - i * 0.014, blued); // serrations
-      box(0.04, 0.05, 0.1, 0, -0.1, 0.1, gold, -0.28); // grip
-      for (let i = 0; i < 5; i++) box(0.042, 0.004, 0.1, 0, -0.075 - i * 0.022, 0.1 + i * 0.006, blued, -0.28);
-      box(0.04, 0.012, 0.07, 0, -0.062, 0.0, blued); // trigger guard
-      box(0.01, 0.03, 0.012, 0, -0.056, 0.03, gold); // trigger
-      box(0.014, 0.03, 0.02, 0, 0.03, 0.1, blued, 0.3); // hammer
-      box(0.05, 0.01, 0.16, 0, 0.03, -0.05, blued); // top rib
-      tube(0.012, 0.07, 0, 0, -0.16, blued); // barrel
-      cone(0.016, 0.014, 0.03, 0, 0, -0.19, gold);
-      box(0.04, 0.014, 0.1, 0, -0.028, -0.05, blued); // under-rail
-      box(0.012, 0.02, 0.02, 0.03, -0.01, 0.06, gold); // safety
-      box(0.01, 0.024, 0.008, 0, 0.038, -0.13, steel); // front post
-      box(0.03, 0.02, 0.02, 0, 0.038, 0.07, steel); // rear notch
-      optic(0.05, -0.04, 0.1, 0.019, 0.026); // micro red dot
     }
+    if (this.slots.length >= MAX_SLOTS) {
+      this.say(`背包已满 (${MAX_SLOTS}/${MAX_SLOTS}) · 先按 G 丢弃`);
+      snd.click();
+      this.emit(true);
+      return;
+    }
+    let slot: InventorySlot;
+    if (def.type === "gun") {
+      slot = {
+        type: "gun",
+        defId: p.defId,
+        ammo: p.ammo ?? def.mag,
+        reserve: p.reserve ?? def.reserve,
+        prime: p.prime || undefined,
+      };
+    } else if (def.type === "grenade") {
+      slot = { type: "grenade", defId: p.defId, count: Math.min(GRENADE_STACK, p.count ?? 1) };
+    } else {
+      slot = { type: "knife", defId: p.defId };
+    }
+    this.slots.push(slot);
+    this.nearPickup = null;
+    removePickup(this.scene, p);
+    this.pickups = this.pickups.filter((q) => q !== p);
+    this.selectSlot(this.slots.length - 1, 0.35);
+  }
 
-    // gloved support hand
-    const fist = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.075, 0.1), glove);
-    fist.position.set(0.006, idx === 3 ? -0.07 : -0.075, idx === 3 ? 0.08 : -0.19);
-    g.add(fist);
-    const cuff = new THREE.Mesh(new THREE.BoxGeometry(0.078, 0.05, 0.04), poly);
-    cuff.position.set(0.006, fist.position.y - 0.02, fist.position.z + 0.07);
-    g.add(cuff);
+  /** G / 触屏「丢」：丢弃当前手持武器；匕首不可丢，保证永远有近战 */
+  private dropCurrent() {
+    const s = this.slot;
+    if (!s) return;
+    if (s.type === "knife") {
+      this.say("匕首不可丢弃 · 必须留一把近战");
+      snd.click();
+      this.emit(true);
+      return;
+    }
+    const p = dropPickup(
+      this.scene,
+      s.type === "gun"
+        ? { type: "gun", defId: s.defId, ammo: s.ammo, reserve: s.reserve, prime: s.prime }
+        : { type: "grenade", defId: s.defId, count: s.count },
+      this.px,
+      this.pz,
+      this.yaw,
+    );
+    this.pickups.push(p);
+    this.slots.splice(this.wIdx, 1);
+    if (this.slots.length === 0) {
+      this.slots.push({ type: "knife", defId: KNIFE_ID });
+      this.wIdx = 0;
+    } else if (this.wIdx >= this.slots.length) this.wIdx = this.slots.length - 1;
+    this.selectSlot(this.wIdx, 0.4);
+  }
 
-    g.position.set(0.22, -0.2, -0.4);
+  /** 每帧：靠近检测 → HUD 提示 */
+  private stepPickups(dt: number) {
+    updatePickups(this.pickups, this.t, dt);
+    let best: Pickup | null = null;
+    let bd = 2.5;
+    for (const p of this.pickups) {
+      if (p.taken) continue;
+      const d = Math.hypot(p.x - this.px, p.z - this.pz);
+      if (d < bd) {
+        bd = d;
+        best = p;
+      }
+    }
+    this.nearPickup = best;
+    if (!best) this.nearPrompt = "";
+    else if (this.slots.length >= MAX_SLOTS)
+      this.nearPrompt = `背包已满 (${MAX_SLOTS}/${MAX_SLOTS}) · 先按 G 丢弃`;
+    else this.nearPrompt = `按 F 拾取 · ${defOf(best.defId).name}`;
+    if (this.msgT > 0) this.msgT -= dt;
+  }
+
+  /** first-person weapon: full part breakdown — rails, bipods, bolts, optics */
+  private buildGun(defId: number) {
+    this.camera.remove(this.gun);
+    const g = buildGunModel(defId);
+    if (this.slot.type === "gun" && this.slot.prime) goldify(g);
     g.traverse((o) => {
       if (o instanceof THREE.Mesh) o.castShadow = false;
     });
@@ -1006,10 +957,10 @@ export class Fps {
     let hit: { bot: Bot; t: number; head: boolean } | null = null;
     for (const b of this.bots) {
       if (!b.alive) continue;
-      const hh = b.kind === "soldier" ? 1.9 : b.kind === "boss" ? 1.55 : 0.95;
-      const ww = b.kind === "soldier" ? 0.3 : b.kind === "boss" ? 1.0 : 0.6;
-      const y0 = b.kind === "soldier" ? 0 : b.kind === "boss" ? 0.15 : 0.05;
-      const headLow = y0 + hh * (b.kind === "soldier" ? 0.79 : 0.58);
+      const hh = b.kind === "soldier" ? 1.9 : b.kind === "boss" ? 3.45 : 1.5;
+      const ww = b.kind === "soldier" ? 0.3 : b.kind === "boss" ? 1.0 : 0.5;
+      const y0 = 0;
+      const headLow = y0 + hh * (b.kind === "soldier" ? 0.79 : 0.78);
       const parts: [number, number, number, number, number, number, boolean][] = [
         [b.x - ww, b.y + headLow, b.z - ww, b.x + ww, b.y + hh, b.z + ww, true],
         [b.x - ww, b.y + y0, b.z - ww, b.x + ww, b.y + headLow, b.z + ww, false],
@@ -1054,14 +1005,18 @@ export class Fps {
 
   // ----------------------------------------------------------------- firing
   private shoot() {
+    const s = this.slot;
     const w = this.w;
-    if (this.fireCd > 0 || this.reloadT > 0 || this.swapT > 0) return;
-    if (this.ammo[this.wIdx] <= 0) {
+    if (this.fireCd > 0 || this.swapT > 0) return;
+    if (s.type === "knife") return this.knifeAttack(w);
+    if (s.type === "grenade") return this.throwGrenade(w);
+    if (this.reloadT > 0) return;
+    if (s.ammo <= 0) {
       snd.click();
       this.fireCd = 0.25;
       return;
     }
-    this.ammo[this.wIdx]--;
+    s.ammo--;
     this.fireCd = 60 / w.rpm;
     snd.shot(w.kind);
     this.muzzleT = 0.05;
@@ -1082,8 +1037,135 @@ export class Fps {
       const pellets = w.pellets ?? 1;
       for (let p = 0; p < pellets; p++) this.firePellet(aim, baseSpread * (pellets > 1 ? 1 : 1) + (pellets > 1 ? w.spread : 0), w);
     }
-    if (this.ammo[this.wIdx] === 0) this.startReload();
+    if (s.ammo === 0) this.startReload();
     this.emit(true);
+  }
+
+  /** 匕首：短射程扇形判定，高倍率伤害 */
+  private knifeAttack(w: WeaponDef) {
+    this.fireCd = 60 / w.rpm;
+    snd.whoosh();
+    this.gunKick = Math.min(0.13, this.gunKick + 0.04);
+    this.swapT = Math.max(this.swapT, 0);
+    const aim = new THREE.Vector3();
+    this.camera.getWorldDirection(aim);
+    const ox = this.px;
+    const oy = this.py + EYE;
+    const oz = this.pz;
+    const bh = this.rayBots(ox, oy, oz, aim.x, aim.y, aim.z, KNIFE_RANGE);
+    const ah = this.air.ray(ox, oy, oz, aim.x, aim.y, aim.z, KNIFE_RANGE);
+    const wt = this.rayWorld(ox, oy, oz, aim.x, aim.y, aim.z, KNIFE_RANGE);
+    const botT = bh ? bh.t : 999;
+    const alienT = ah ? ah.t : 999;
+    const worldT = wt > 0 ? wt : 999;
+    if (bh && botT <= alienT && botT < worldT) {
+      const hx = ox + aim.x * bh.t;
+      const hy = oy + aim.y * bh.t;
+      const hz = oz + aim.z * bh.t;
+      const dmg = Math.round(w.dmg * (bh.head ? w.headMul : 1));
+      bh.bot.hp -= dmg;
+      bh.bot.hurt = 0.14;
+      this.burst(hx, hy, hz, bh.head ? 12 : 7, [0.55, 0.06, 0.05], 2.4);
+      this.hitT = 0.22;
+      if (bh.head) this.hitHead = 0.3;
+      snd.hit(bh.head);
+      if (bh.bot.hp <= 0) this.killBot(bh.bot, bh.head);
+    } else if (ah && alienT < worldT) {
+      const hx = ox + aim.x * ah.t;
+      const hy = oy + aim.y * ah.t;
+      const hz = oz + aim.z * ah.t;
+      const dmg = Math.round(w.dmg * (ah.head ? w.headMul : 1));
+      this.air.hurt(ah.index, dmg, true);
+      this.burst(hx, hy, hz, 10, [0.4, 0.95, 0.85], 2.2);
+      this.hitT = 0.22;
+      if (ah.head) this.hitHead = 0.3;
+      snd.hit(ah.head);
+    }
+    this.emit(true);
+  }
+
+  /** 手雷：独立投掷循环，不占用枪械开火；引信 1.5s + 抛物线 */
+  private throwGrenade(w: WeaponDef) {
+    const s = this.slot;
+    if (s.type !== "grenade" || s.count <= 0) return;
+    s.count--;
+    this.fireCd = 60 / w.rpm;
+    snd.swap();
+    const aim = new THREE.Vector3();
+    this.camera.getWorldDirection(aim);
+    const ox = this.px;
+    const oy = this.py + EYE - 0.1;
+    const oz = this.pz;
+    const spd = 17;
+    const mesh = this.buildGrenadeMesh();
+    mesh.position.set(ox, oy, oz);
+    mesh.lookAt(ox + aim.x, oy + aim.y, oz + aim.z);
+    this.scene.add(mesh);
+    this.nades.push({
+      mesh,
+      x: ox,
+      y: oy,
+      z: oz,
+      vx: aim.x * spd,
+      vy: aim.y * spd + 3.2,
+      vz: aim.z * spd,
+      life: 1.5,
+    });
+    if (s.count <= 0) {
+      this.slots.splice(this.wIdx, 1);
+      if (this.slots.length === 0) this.slots.push({ type: "knife", defId: KNIFE_ID });
+      this.wIdx = Math.min(this.wIdx, this.slots.length - 1);
+      this.selectSlot(this.wIdx, 0.4);
+    }
+    this.emit(true);
+  }
+
+  private buildGrenadeMesh(): THREE.Group {
+    const g = new THREE.Group();
+    const shell = new THREE.MeshStandardMaterial({ color: 0x4d5538, metalness: 0.4, roughness: 0.55 });
+    const body = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 10), shell);
+    body.scale.set(1, 1.2, 1);
+    g.add(body);
+    const cap = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.03, 0.036, 0.05, 10),
+      new THREE.MeshStandardMaterial({ color: 0x8a8f7a, metalness: 0.8, roughness: 0.35 }),
+    );
+    cap.position.y = 0.09;
+    g.add(cap);
+    return g;
+  }
+
+  private updateGrenades(dt: number) {
+    for (let i = this.nades.length - 1; i >= 0; i--) {
+      const n = this.nades[i];
+      n.life -= dt;
+      n.vy -= GRAV * dt;
+      const speed = Math.hypot(n.vx, n.vy, n.vz);
+      const step = speed * dt + 0.16;
+      const len = speed || 1;
+      const dx = n.vx / len;
+      const dy = n.vy / len;
+      const dz = n.vz / len;
+      const wt = this.rayWorld(n.x, n.y, n.z, dx, dy, dz, step);
+      const hitWall = wt > 0 && wt <= step;
+      const hitGround = n.y <= 0.14 && n.vy < 0;
+      if (n.life <= 0 || hitWall || hitGround) {
+        const hx = hitWall ? n.x + dx * wt : n.x;
+        const hy = hitWall ? Math.max(0.3, n.y + dy * wt) : Math.max(0.3, n.y);
+        const hz = hitWall ? n.z + dz * wt : n.z;
+        const w = defOf(GRENADE_ID);
+        this.explode(hx, hy, hz, w.splashR ?? 6, w.splash ?? 130, true);
+        this.scene.remove(n.mesh);
+        this.nades.splice(i, 1);
+      } else {
+        n.x += n.vx * dt;
+        n.y += n.vy * dt;
+        n.z += n.vz * dt;
+        n.mesh.position.set(n.x, n.y, n.z);
+        n.mesh.rotation.x += dt * 6;
+        n.mesh.rotation.z += dt * 4;
+      }
+    }
   }
 
   private firePellet(aim: THREE.Vector3, spread: number, w: WeaponDef) {
@@ -1240,7 +1322,6 @@ export class Fps {
         yaw: this.yaw,
         hp: Math.round(this.hp),
       });
-      this.peerCount = n.count;
     }
     for (const [, p] of this.peers) {
       const k = Math.min(1, dt * 11);
@@ -1269,7 +1350,6 @@ export class Fps {
         this.scene.add(npc.group);
         p = { npc, x: m.x, y: m.y, z: m.z, yaw: m.yaw, tx: m.x, ty: m.y, tz: m.z, tyaw: m.yaw, name: m.name || "队友" };
         this.peers.set(m.id, p);
-        this.peerCount = this.peers.size;
         this.feed = [{ id: this.feedId++, name: p.name, gun: "已加入战场", head: false }, ...this.feed].slice(0, 5);
         snd.click();
         this.emit(true); // 队友进场才强制刷新 HUD；12.5Hz 的位置包由每帧常规 emit 兜底
@@ -1290,7 +1370,6 @@ export class Fps {
       if (p) {
         this.scene.remove(p.npc.group);
         this.peers.delete(m.id);
-        this.peerCount = this.peers.size;
         this.emit(true);
       }
     } else if (m.t === "h") {
@@ -1414,7 +1493,8 @@ export class Fps {
     const h = Math.max(1, Math.round(r.height));
     // 与构造函数一致的像素比上限，手机绝不能升到 2.0
     const base = Math.min(this.coarse ? 1.35 : 2, window.devicePixelRatio || 1);
-    // 开镜时超采样，让放大画面保持清晰而不是露出纹素
+    // 开镜时超采样，让放大画面保持清晰而不是露出纹素。
+    // 只作用于 WebGL composer；overlay 始终用 base，两者像素比互相独立
     const want = this.scoped ? Math.min(3, base * 1.6) : base;
     // 尺寸与像素比都没变就直接返回：设置 canvas.width/height 会清空画布，
     // 多余调用在手机（地址栏伸缩触发连环 resize）上表现为整页闪烁
@@ -1430,6 +1510,8 @@ export class Fps {
     this.composer?.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    // overlay 画布按 device 像素开尺寸，但统一用 setTransform(base) 切到 CSS 像素坐标系，
+    // drawOverlay 里所有坐标/线宽一律写 CSS 像素，禁止再乘 devicePixelRatio
     this.overlayCv.width = Math.round(w * base);
     this.overlayCv.height = Math.round(h * base);
     this.overlay.setTransform(base, 0, 0, base, 0, 0);
@@ -1451,12 +1533,14 @@ export class Fps {
     if (this.status === "menu") {
       this.menuCam += dt * 0.05;
       this.stepFx(dt);
+      this.stepPickups(dt);
       return;
     }
     if (this.status === "over") {
       this.deathT = Math.max(0, this.deathT - dt);
       this.stepFx(dt);
       this.updateBots(dt);
+      this.stepPickups(dt);
       return;
     }
     if (this.status !== "playing") return;
@@ -1547,6 +1631,8 @@ export class Fps {
     this.shake = Math.max(0, this.shake - dt * 2.6);
 
     this.updateRockets(dt);
+    this.updateGrenades(dt);
+    this.stepPickups(dt);
     this.stepAir(dt);
     this.updateBots(dt);
     this.stepFx(dt);
@@ -1560,7 +1646,8 @@ export class Fps {
       if (b.npc.flash.visible) b.npc.flash.rotation.z = Math.random() * 6.28;
       if (!b.alive) {
         b.die -= dt;
-        animateNpc(b.npc, 0, 0, false, 0, Math.max(0, b.die));
+        if (b.kind === "soldier") animateNpc(b.npc, 0, 0, false, 0, Math.max(0, b.die));
+        else animateBeast(b.npc, 0, 0, false, 0, Math.max(0, b.die));
         b.npc.group.position.y = Math.max(-0.4, b.npc.group.position.y - dt * 0.35);
         if (b.die <= 0) {
           const s = this.map.enemySpawns[Math.floor(Math.random() * this.map.enemySpawns.length)];
@@ -1779,9 +1866,10 @@ export class Fps {
 
   private drawOverlay() {
     const ctx = this.overlay;
-    const W = this.overlayCv.width;
-    const H = this.overlayCv.height;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    // CSS 像素：resize() 已 setTransform(base)。此前用 overlayCv.width（device 像素）
+    // 当作画布尺寸，再被 base 变换放大一次 → base=2 时准星偏到 base² 倍位置，与 3D 瞄准框错位
+    const W = this.lastW || this.overlayCv.width;
+    const H = this.lastH || this.overlayCv.height;
     ctx.clearRect(0, 0, W, H);
     if (this.status === "menu") return;
 
@@ -1798,20 +1886,22 @@ export class Fps {
       ctx.translate(W / 2, H / 2);
       ctx.rotate(-this.hurtDir);
       ctx.strokeStyle = `rgba(255,60,40,${this.hurtFlash})`;
-      ctx.lineWidth = 5 * dpr;
+      ctx.lineWidth = 5;
       ctx.beginPath();
       ctx.arc(0, 0, Math.min(W, H) * 0.22, -Math.PI / 2 - 0.45, -Math.PI / 2 + 0.45);
       ctx.stroke();
       ctx.restore();
     }
 
+    // 唯一屏幕中心：准星、镜内刻线、弹着点全部以它为基准
     const cx = W / 2;
     const cy = H / 2;
     const w = this.w;
     if (this.scoped && w.scope) {
       // the black surround AND its rim are real geometry now (buildScopeFrame);
       // the rim sits at 0.75 of the half-frustum, so 2D only paints lens content
-      const r = Math.min(W, H) * 0.375;
+      // 3D 内唇 = 0.75 * 竖直半高 → CSS 半径 = 0.375 * cssH（透视下横竖一致）
+      const r = H * 0.375;
       const shade = ctx.createRadialGradient(cx, cy, r * 0.3, cx, cy, r);
       shade.addColorStop(0, "rgba(0,0,0,0)");
       shade.addColorStop(0.7, "rgba(0,0,0,0.16)");
@@ -1900,7 +1990,7 @@ export class Fps {
       ctx.strokeStyle = `rgba(120,170,150,${0.28 * a})`;
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(cx, cy + 4, 24, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 24, 0, Math.PI * 2);
       ctx.stroke();
       // red dot with bloom
       const dot = ctx.createRadialGradient(cx, cy, 0, cx, cy, 9);
@@ -1922,10 +2012,10 @@ export class Fps {
     } else {
       const moving = Math.hypot(this.vx, this.vz) > 1.2;
       const spread = w.spread * (moving ? 2.6 : 1) * (this.grounded ? 1 : 3) + this.gunKick * 0.05;
-      const gap = 4 * dpr + (spread / Math.tan((this.camera.fov * Math.PI) / 360)) * (H / 2) * 0.9;
-      const len = 8 * dpr;
+      const gap = 4 + (spread / Math.tan((this.camera.fov * Math.PI) / 360)) * (H / 2) * 0.9;
+      const len = 8;
       ctx.strokeStyle = "rgba(126,255,140,0.92)";
-      ctx.lineWidth = 2 * dpr;
+      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(cx - gap - len, cy);
       ctx.lineTo(cx - gap, cy);
@@ -1942,9 +2032,9 @@ export class Fps {
 
     if (this.hitT > 0) {
       const k = this.hitT / 0.22;
-      const r = 9 * dpr * (1.4 - k * 0.4);
+      const r = 9 * (1.4 - k * 0.4);
       ctx.strokeStyle = this.hitHead > 0 ? `rgba(255,140,20,${k})` : `rgba(255,255,255,${k})`;
-      ctx.lineWidth = (this.hitHead > 0 ? 3.4 : 2.4) * dpr;
+      ctx.lineWidth = this.hitHead > 0 ? 3.4 : 2.4;
       ctx.beginPath();
       for (const [sx, sy] of [
         [-1, -1],
@@ -1957,7 +2047,7 @@ export class Fps {
       }
       ctx.stroke();
     }
-    if (this.ammo[this.wIdx] === 0 && this.status === "playing") {
+    if (slotAmmo(this.slot) === 0 && this.slot.type === "gun" && this.status === "playing") {
       ctx.fillStyle = "rgba(226,58,46,0.85)";
       ctx.font = `700 15px Rajdhani, sans-serif`;
       ctx.textAlign = "center";
@@ -1979,7 +2069,8 @@ export class Fps {
       const d = Math.hypot(b.x - this.px, b.z - this.pz);
       if (d < 46) dots.push(Math.round(b.x), Math.round(b.z));
       // project the head onto the screen for the nameplate
-      this.tmp.set(b.x, b.y + 2.05, b.z).project(this.camera);
+      const plateY = b.kind === "soldier" ? 2.05 : b.kind === "boss" ? 3.7 : 1.7;
+      this.tmp.set(b.x, b.y + plateY, b.z).project(this.camera);
       if (this.tmp.z < 1 && this.tmp.x > -1.08 && this.tmp.x < 1.08 && this.tmp.y > -1.05 && this.tmp.y < 1.05) {
         markers.push({
           x: (this.tmp.x * 0.5 + 0.5) * 100,
@@ -2002,14 +2093,17 @@ export class Fps {
       }
     }
     const aliens = this.air.contacts();
+    const cur = this.slot;
     const h: HudState = {
       status: this.status,
       hp: Math.max(0, Math.round(this.hp)),
       armor: Math.max(0, Math.round(this.armor)),
-      ammo: this.ammo[this.wIdx],
-      reserve: this.reserve[this.wIdx],
-      weapon: this.w.name,
+      ammo: slotAmmo(cur),
+      reserve: slotReserve(cur),
+      weapon: slotLabel(cur),
       weaponIdx: this.wIdx,
+      weaponType: cur.type,
+      slots: this.slots.map((s) => ({ name: slotLabel(s), type: s.type })),
       reloading: this.reloadT > 0 ? 1 - this.reloadT / this.w.reload : 0,
       kills: this.kills,
       headshots: this.headshots,
@@ -2021,7 +2115,11 @@ export class Fps {
       alive: this.bots.filter((b) => b.alive).length + this.air.alienCount() + this.peers.size,
       radar: { px: Math.round(this.px), pz: Math.round(this.pz), yaw: this.yaw, dots, aliens },
       feed: this.feed,
-      prompt: this.reloadT > 0 ? "装弹中" : this.swapT > 0 ? "切换武器" : "",
+      prompt:
+        this.msgT > 0 && this.msg
+          ? this.msg
+          : this.nearPrompt ||
+            (this.reloadT > 0 ? "装弹中" : this.swapT > 0 ? "切换武器" : ""),
       alert: this.air.alert,
       markers,
       peers: this.peers.size,
@@ -2030,7 +2128,8 @@ export class Fps {
     const sig = [
       h.status, h.hp, h.armor, h.ammo, h.reserve, h.weaponIdx, Math.round(h.reloading * 24),
       h.kills, h.streak, h.score, h.time, h.wave, h.alive, h.radar.px, h.radar.pz,
-      Math.round(h.radar.yaw * 8), dots.join(","), aliens.join(","), h.alert,
+      Math.round(h.radar.yaw * 8), dots.join(","), aliens.join(","), h.alert, h.prompt,
+      h.slots.map((s) => s.name).join(","),
       h.feed.map((f) => f.id).join(","),
       h.markers.map((m) => `${Math.round(m.x * 4)}:${Math.round(m.y * 4)}:${m.hp}:${m.name.length}`).join(","),
     ].join("|");

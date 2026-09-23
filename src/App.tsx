@@ -12,9 +12,16 @@ const DEFAULT_HUD: HudState = {
   hp: 100,
   armor: 100,
   ammo: 30,
-  reserve: 90,
-  weapon: "M4A1",
+  reserve: 120,
+  weapon: "MP5",
   weaponIdx: 0,
+  weaponType: "gun",
+  slots: [
+    { name: "MP5", type: "gun" },
+    { name: "AWM", type: "gun" },
+    { name: "匕首", type: "knife" },
+    { name: "手雷", type: "grenade" },
+  ],
   reloading: 0,
   kills: 0,
   headshots: 0,
@@ -245,7 +252,9 @@ export default function App() {
               ["装弹", () => gameRef.current?.reloadNow()],
               ["跳", () => gameRef.current?.jump()],
               ["镜", () => gameRef.current?.toggleScope()],
-              ["枪", () => gameRef.current?.weaponNow(((hud?.weaponIdx ?? 0) + 1) % 8)],
+              ["枪", () => gameRef.current?.cycleWeapon(1)],
+              ["拾", () => gameRef.current?.pickupNow()],
+              ["丢", () => gameRef.current?.dropNow()],
             ].map(([label, fn]) => (
               <button
                 key={label as string}
